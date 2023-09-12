@@ -18,11 +18,15 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 
 use embedded_graphics::{
+    framebuffer::Framebuffer,
     mono_font::{
         ascii::{FONT_10X20, FONT_6X12},
         MonoTextStyle,
     },
-    pixelcolor::BinaryColor,
+    pixelcolor::{
+        raw::{LittleEndian, RawU1},
+        BinaryColor,
+    },
     prelude::DrawTarget,
     prelude::Point,
     text::Text,
@@ -71,7 +75,11 @@ impl Drawable for Notification {
     }
 }
 
-pub async fn read_notifications() -> Result<impl Stream<Item = Result<Notification>>> {
+pub async fn read_notifications<const SIZE: usize>(
+) -> Result<impl Stream<Item = Result<[u8; SIZE]>>> {
+    let mut frame_buffer: Framebuffer<BinaryColor, RawU1, LittleEndian, 128, 40, SIZE> =
+        Framebuffer::new();
+
     let (resource, conn) = connection::new_session_sync()?;
     tokio::spawn(async {
         let err = resource.await;
@@ -97,16 +105,16 @@ pub async fn read_notifications() -> Result<impl Stream<Item = Result<Notificati
         )
         .await?;
 
-    let (mut tx, mut rx) = mpsc::channel::<Message>(10);
+    let (tx, mut rx) = mpsc::channel::<Message>(10);
 
     conn.start_receive(rule, Box::new(move |msg, _| tx.try_send(msg).is_ok()));
 
     Ok(stream! {
          while let Some(msg) = rx.recv().await {
-
-            let ty = Notification::try_from(msg);
-
-            yield ty;
+            frame_buffer.clear(BinaryColor::Off)?;
+            let notif = Notification::try_from(msg)?;
+            notif.draw(&mut frame_buffer)?;
+            yield Ok(frame_buffer.data().clone());
         }
     })
 }
